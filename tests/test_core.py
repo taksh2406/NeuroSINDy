@@ -76,5 +76,62 @@ class TestSINDyCore(unittest.TestCase):
         self.assertIn(r"\frac{dx}{dt}", eqs_latex[0])
         self.assertIn(r"\frac{dy}{dt}", eqs_latex[1])
 
+    def test_ensemble_fit(self):
+        t = np.linspace(0, 10, 500)
+        x = np.exp(-0.5 * t) + 2.0 * np.exp(-1.0 * t)
+        y = np.exp(-1.0 * t)
+        X = np.column_stack([x, y])
+        
+        dx = -0.5 * np.exp(-0.5 * t) - 2.0 * np.exp(-1.0 * t)
+        dy = -1.0 * np.exp(-1.0 * t)
+        X_dot = np.column_stack([dx, dy])
+        
+        # Use degree 2 library to have 6 terms
+        library = FeatureLibrary(degree=2)
+        engine = SINDyEngine(threshold=0.1, alpha=0.0, library=library)
+        engine.fit_ensemble(X, X_dot, state_names=['x', 'y'], n_models=10, subsample_ratio=0.8, inclusion_threshold=0.6)
+        
+        self.assertEqual(engine.coefficients.shape, (6, 2))
+        self.assertTrue(hasattr(engine, 'inclusion_probabilities'))
+        self.assertEqual(engine.inclusion_probabilities.shape, (6, 2))
+        self.assertTrue(hasattr(engine, 'coefficients_mean'))
+        self.assertTrue(hasattr(engine, 'coefficients_std'))
+        
+        # Verify the key features x and y are consistently included in dx/dt (col 0)
+        feat_names = engine.library.feature_names
+        x_idx = feat_names.index('x')
+        y_idx = feat_names.index('y')
+        
+        # Inclusion probability of correct features should be high (close to 1.0)
+        self.assertGreater(engine.inclusion_probabilities[x_idx, 0], 0.8)
+        self.assertGreater(engine.inclusion_probabilities[y_idx, 0], 0.8)
+        self.assertGreater(engine.inclusion_probabilities[y_idx, 1], 0.8)
+
+    def test_bic_selection(self):
+        t = np.linspace(0, 10, 500)
+        x = np.exp(-0.5 * t) + 2.0 * np.exp(-1.0 * t)
+        y = np.exp(-1.0 * t)
+        X = np.column_stack([x, y])
+        
+        dx = -0.5 * np.exp(-0.5 * t) - 2.0 * np.exp(-1.0 * t)
+        dy = -1.0 * np.exp(-1.0 * t)
+        X_dot = np.column_stack([dx, dy])
+        
+        # Use degree 2 library
+        library = FeatureLibrary(degree=2)
+        engine = SINDyEngine(alpha=0.0, library=library)
+        best_lambda = engine.select_threshold_bic(X, X_dot, state_names=['x', 'y'], thresholds=np.logspace(-2, -1, 5))
+        
+        # Best lambda should select the true features and discard noise
+        self.assertTrue(0.01 <= best_lambda <= 0.1)
+        feat_names = engine.library.feature_names
+        x_idx = feat_names.index('x')
+        y_idx = feat_names.index('y')
+        
+        # Coefficients should match true coefficients
+        self.assertAlmostEqual(engine.coefficients[x_idx, 0], -0.5, places=3)
+        self.assertAlmostEqual(engine.coefficients[y_idx, 0], -1.0, places=3)
+        self.assertAlmostEqual(engine.coefficients[y_idx, 1], -1.0, places=3)
+
 if __name__ == '__main__':
     unittest.main()

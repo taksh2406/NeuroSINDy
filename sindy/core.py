@@ -232,3 +232,123 @@ class SINDyEngine:
             atol=1e-8
         )
         return sol.y.T
+
+    def fit_ensemble(self, X, X_dot, U=None, state_names=None, input_names=None,
+                     n_models=50, subsample_ratio=0.8, inclusion_threshold=0.6, seed=42):
+        X = np.asarray(X)
+        X_dot = np.asarray(X_dot)
+        
+        if X.ndim == 1:
+            X = X[:, np.newaxis]
+        if X_dot.ndim == 1:
+            X_dot = X_dot[:, np.newaxis]
+            
+        M, D = X.shape
+        
+        self.state_names = state_names if state_names is not None else [f'x{i}' for i in range(D)]
+        if U is not None:
+            U_arr = np.asarray(U)
+            if U_arr.ndim == 1:
+                U_arr = U_arr[:, np.newaxis]
+            K = U_arr.shape[1]
+            self.input_names = input_names if input_names is not None else [f'u{i}' for i in range(K)]
+        else:
+            self.input_names = []
+            U_arr = None
+            
+        Theta = self.library.fit_transform(X, U, state_names=self.state_names, input_names=self.input_names)
+        P = Theta.shape[1]
+        
+        rng = np.random.default_rng(seed)
+        subsample_size = int(M * subsample_ratio)
+        
+        ensemble_coefs = np.zeros((n_models, P, D))
+        
+        for i in range(n_models):
+            indices = rng.choice(M, size=subsample_size, replace=False)
+            X_sub = X[indices]
+            X_dot_sub = X_dot[indices]
+            U_sub = U_arr[indices] if U_arr is not None else None
+            
+            temp_engine = SINDyEngine(
+                threshold=self.threshold, 
+                max_iter=self.max_iter, 
+                alpha=self.alpha, 
+                library=self.library
+            )
+            temp_engine.fit(X_sub, X_dot_sub, U_sub, state_names=self.state_names, input_names=self.input_names)
+            ensemble_coefs[i] = temp_engine.coefficients
+            
+        self.inclusion_probabilities = np.mean(ensemble_coefs != 0, axis=0)
+        self.coefficients_mean = np.mean(ensemble_coefs, axis=0)
+        self.coefficients_std = np.std(ensemble_coefs, axis=0)
+        
+        self.coefficients = np.zeros((P, D))
+        for j in range(D):
+            y = X_dot[:, j]
+            active = self.inclusion_probabilities[:, j] >= inclusion_threshold
+            
+            if np.any(active):
+                Theta_active = Theta[:, active]
+                if self.alpha > 0:
+                    lhs = Theta_active.T @ Theta_active + self.alpha * np.eye(Theta_active.shape[1])
+                    rhs = Theta_active.T @ y
+                    self.coefficients[active, j] = np.linalg.solve(lhs, rhs)
+                else:
+                    self.coefficients[active, j] = np.linalg.lstsq(Theta_active, y, rcond=None)[0]
+                    
+        return self
+
+    def select_threshold_bic(self, X, X_dot, U=None, state_names=None, input_names=None, thresholds=None):
+        X = np.asarray(X)
+        X_dot = np.asarray(X_dot)
+        if X.ndim == 1:
+            X = X[:, np.newaxis]
+        if X_dot.ndim == 1:
+            X_dot = X_dot[:, np.newaxis]
+            
+        M, D = X.shape
+        
+        if thresholds is None:
+            thresholds = np.logspace(-3, 0, 30)
+            
+        best_bic = np.inf
+        best_threshold = self.threshold
+        best_coefs = None
+        
+        self.state_names = state_names if state_names is not None else ([f'x{i}' for i in range(D)] if self.state_names is None else self.state_names)
+        if U is not None:
+            U_arr = np.asarray(U)
+            if U_arr.ndim == 1:
+                U_arr = U_arr[:, np.newaxis]
+            K = U_arr.shape[1]
+            self.input_names = input_names if input_names is not None else ([f'u{i}' for i in range(K)] if self.input_names is None else self.input_names)
+        else:
+            self.input_names = []
+            
+        for th in thresholds:
+            temp_engine = SINDyEngine(
+                threshold=th,
+                max_iter=self.max_iter,
+                alpha=self.alpha,
+                library=self.library
+            )
+            temp_engine.fit(X, X_dot, U, state_names=self.state_names, input_names=self.input_names)
+            X_dot_pred = temp_engine.predict(X, U)
+            
+            mse = np.mean((X_dot - X_dot_pred) ** 2)
+            if mse == 0:
+                mse = 1e-15
+                
+            k = np.sum(temp_engine.coefficients != 0)
+            bic = M * np.log(mse) + k * np.log(M)
+            
+            if bic < best_bic:
+                best_bic = bic
+                best_threshold = th
+                best_coefs = temp_engine.coefficients
+                
+        self.threshold = best_threshold
+        self.coefficients = best_coefs
+        
+        return best_threshold
