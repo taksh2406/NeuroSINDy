@@ -133,5 +133,31 @@ class TestSINDyCore(unittest.TestCase):
         self.assertAlmostEqual(engine.coefficients[y_idx, 0], -1.0, places=3)
         self.assertAlmostEqual(engine.coefficients[y_idx, 1], -1.0, places=3)
 
+    def test_integral_fit(self):
+        # Generate clean synthetic data:
+        # dx/dt = -0.5 * x
+        # dy/dt = -2.0 * y
+        t = np.linspace(0, 10, 1000)
+        x = np.exp(-0.5 * t)
+        y = np.exp(-2.0 * t)
+        X = np.column_stack([x, y])
+        
+        library = FeatureLibrary(degree=2)
+        engine = SINDyEngine(threshold=0.1, alpha=0.0, library=library)
+        engine.fit_integral(t, X, state_names=['x', 'y'], window_width=10)
+        
+        feat_names = engine.library.feature_names
+        x_idx = feat_names.index('x')
+        y_idx = feat_names.index('y')
+        
+        # Verify coefficients match the analytical values
+        self.assertAlmostEqual(engine.coefficients[x_idx, 0], -0.5, places=3)
+        self.assertAlmostEqual(engine.coefficients[y_idx, 1], -2.0, places=3)
+        
+        # Verify other coefficients are zero
+        non_zero_dx = np.where(np.abs(engine.coefficients[:, 0]) > 1e-5)[0]
+        self.assertEqual(len(non_zero_dx), 1)
+        self.assertEqual(non_zero_dx[0], x_idx)
+
 if __name__ == '__main__':
     unittest.main()

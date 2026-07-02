@@ -54,7 +54,7 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.05,
                         help='SINDy sparsity threshold (default: 0.05)')
     parser.add_argument('--diff-method', type=str, default='central',
-                        choices=['central', 'savgol', 'spline', 'tv'],
+                        choices=['central', 'savgol', 'spline', 'tv', 'integral'],
                         help='Differentiation method (default: central)')
     parser.add_argument('--savgol-window', type=int, default=15,
                         help='Savitzky-Golay window size (default: 15)')
@@ -62,6 +62,8 @@ def main():
                         help='TVDiff regularization parameter alpha (default: 0.01)')
     parser.add_argument('--tv-iter', type=int, default=15,
                         help='TVDiff solver iterations (default: 15)')
+    parser.add_argument('--window-width', type=int, default=10,
+                        help='Integral SINDy window width in time steps (default: 10)')
     parser.add_argument('--use-ensemble', action='store_true',
                         help='Use Ensemble SINDy (E-SINDy) bootstrap bagging')
     parser.add_argument('--auto-threshold', action='store_true',
@@ -87,6 +89,8 @@ def main():
         print(f"  SavGol Window:      {args.savgol_window}")
     elif args.diff_method == 'tv':
         print(f"  TV alpha / iter:    {args.tv_alpha} / {args.tv_iter}")
+    elif args.diff_method == 'integral':
+        print(f"  Integral Window:    {args.window_width} steps")
     print(f"  Output Directory:   {args.output_dir}")
     print("-" * 60)
     
@@ -117,28 +121,32 @@ def main():
     X = np.column_stack([sim_data['v_meas'], sim_data['w_meas']])
     U = sim_data['I_ext']
     
-    # 2. Compute numerical derivatives
-    print("Computing numerical derivatives...")
-    if args.diff_method == 'central':
-        X_dot = finite_difference(sim_data['t'], X, method='central')
-    elif args.diff_method == 'savgol':
-        X_dot = savitzky_golay_difference(sim_data['t'], X, window_length=args.savgol_window, polyorder=3)
-    elif args.diff_method == 'spline':
-        # Fit smoothing spline: if noise is 0, s=0, else s=None (auto-tuned)
-        s_val = 0 if args.noise == 0.0 else None
-        X_dot = spline_difference(sim_data['t'], X, s=s_val)
-    elif args.diff_method == 'tv':
-        print(f"  [TVDiff] Running total variation differentiation (this may take a few seconds)...")
-        X_dot = tv_difference(sim_data['t'], X, alph=args.tv_alpha, itern=args.tv_iter, scale='large')
+    # 2. Compute numerical derivatives / setup integration
+    if args.diff_method == 'integral':
+        print("Using Integral SINDy (bypassing numerical differentiation)...")
+        X_dot = None
+    else:
+        print("Computing numerical derivatives...")
+        if args.diff_method == 'central':
+            X_dot = finite_difference(sim_data['t'], X, method='central')
+        elif args.diff_method == 'savgol':
+            X_dot = savitzky_golay_difference(sim_data['t'], X, window_length=args.savgol_window, polyorder=3)
+        elif args.diff_method == 'spline':
+            # Fit smoothing spline: if noise is 0, s=0, else s=None (auto-tuned)
+            s_val = 0 if args.noise == 0.0 else None
+            X_dot = spline_difference(sim_data['t'], X, s=s_val)
+        elif args.diff_method == 'tv':
+            print(f"  [TVDiff] Running total variation differentiation (this may take a few seconds)...")
+            X_dot = tv_difference(sim_data['t'], X, alph=args.tv_alpha, itern=args.tv_iter, scale='large')
+            
+        # Calculate derivative error
+        X_dot_true = np.column_stack([sim_data['dv_true'], sim_data['dw_true']])
+        deriv_mae = np.mean(np.abs(X_dot - X_dot_true), axis=0)
+        print(f"Derivative computation error (MAE):")
+        print(f"  dv/dt error: {deriv_mae[0]:.6f}")
+        print(f"  dw/dt error: {deriv_mae[1]:.6f}")
+        print("-" * 60)
         
-    # Calculate derivative error
-    X_dot_true = np.column_stack([sim_data['dv_true'], sim_data['dw_true']])
-    deriv_mae = np.mean(np.abs(X_dot - X_dot_true), axis=0)
-    print(f"Derivative computation error (MAE):")
-    print(f"  dv/dt error: {deriv_mae[0]:.6f}")
-    print(f"  dw/dt error: {deriv_mae[1]:.6f}")
-    print("-" * 60)
-    
     # 3. Discover equations using SINDyEngine
     print("Running SINDy identification engine...")
     library = FeatureLibrary(degree=3, include_interaction_with_input=True)
@@ -147,27 +155,37 @@ def main():
     state_names = ['v', 'w']
     input_names = ['I_ext']
     
-    if args.auto_threshold:
-        print("Selecting optimal threshold using Bayesian Information Criterion (BIC)...")
-        best_th = engine.select_threshold_bic(X, X_dot, U, state_names=state_names, input_names=input_names)
-        print(f"  Optimal SINDy threshold found: {best_th:.5f}")
-        
-    if args.use_ensemble:
-        print("Fitting Ensemble SINDy (E-SINDy) with bootstrap bagging...")
-        engine.fit_ensemble(
-            X, X_dot, U,
+    if args.diff_method == 'integral':
+        if args.auto_threshold or args.use_ensemble:
+            print("  [Warning] BIC thresholding and Ensemble SINDy are bypassed in integral mode. Fitting standard model...")
+        engine.fit_integral(
+            sim_data['t'], X, U,
             state_names=state_names,
             input_names=input_names,
-            n_models=50,
-            subsample_ratio=0.8,
-            inclusion_threshold=0.6
+            window_width=args.window_width
         )
     else:
-        engine.fit(
-            X, X_dot, U,
-            state_names=state_names,
-            input_names=input_names
-        )
+        if args.auto_threshold:
+            print("Selecting optimal threshold using Bayesian Information Criterion (BIC)...")
+            best_th = engine.select_threshold_bic(X, X_dot, U, state_names=state_names, input_names=input_names)
+            print(f"  Optimal SINDy threshold found: {best_th:.5f}")
+            
+        if args.use_ensemble:
+            print("Fitting Ensemble SINDy (E-SINDy) with bootstrap bagging...")
+            engine.fit_ensemble(
+                X, X_dot, U,
+                state_names=state_names,
+                input_names=input_names,
+                n_models=50,
+                subsample_ratio=0.8,
+                inclusion_threshold=0.6
+            )
+        else:
+            engine.fit(
+                X, X_dot, U,
+                state_names=state_names,
+                input_names=input_names
+            )
     
     # Get discovered equations
     discovered_eqs = engine.get_equations(precision=4, latex=False)
@@ -240,16 +258,17 @@ def main():
     print(f"  Saved coefficient heatmap plot to: {coef_path}")
     
     # Pareto front plot
-    viz.plot_pareto_front(
-        X=X,
-        X_dot=X_dot,
-        U=U,
-        state_names=state_names,
-        input_names=input_names,
-        library=library,
-        save_path=pareto_path
-    )
-    print(f"  Saved Pareto front plot to: {pareto_path}")
+    if args.diff_method != 'integral':
+        viz.plot_pareto_front(
+            X=X,
+            X_dot=X_dot,
+            U=U,
+            state_names=state_names,
+            input_names=input_names,
+            library=library,
+            save_path=pareto_path
+        )
+        print(f"  Saved Pareto front plot to: {pareto_path}")
     
     # Ensemble statistics plot
     if args.use_ensemble:

@@ -25,6 +25,7 @@ Three methodological contributions are layered on top of the baseline SINDy algo
 
 | Contribution | Purpose |
 |:---|:---|
+| **Integral-Form SINDy (I-SINDy)** | Bypasses numerical differentiation entirely, offering supreme noise robustness |
 | **TVDiff** — Total Variation Regularised Differentiation | Noise-robust derivative estimation, preserving spike upstrokes |
 | **BIC model selection** | Automatic sparsity threshold tuning; no manual λ search required |
 | **E-SINDy** — Ensemble bagging | Bootstrap uncertainty quantification of discovered coefficients |
@@ -77,6 +78,14 @@ $$\dot{\mathbf{X}} \approx \boldsymbol{\Theta}(\mathbf{X}, \mathbf{U})\,\boldsym
 
 Sparsity is enforced by **Sequentially Thresholded Least Squares (STLSQ)**: solve Ridge regression → zero coefficients below $\lambda$ → re-solve on active set → repeat to convergence.
 
+### Integral-Form SINDy (I-SINDy)
+
+Instead of approximating the derivative $\dot{\mathbf{X}}(t)$ numerically, the system equations are integrated over a window $[t_i, t_i + H]$:
+
+$$\mathbf{X}(t_i + H) - \mathbf{X}(t_i) = \int_{t_i}^{t_i + H} \boldsymbol{\Theta}(\mathbf{X}(\tau), \mathbf{U}(\tau))\,d\tau\,\boldsymbol{\Xi}$$
+
+This formulation converts differentiation into integration. Since integration acts as a low-pass filter, high-frequency measurement noise is naturally smoothed out. The target values become simple differences $\mathbf{X}(t_i+H) - \mathbf{X}(t_i)$, and the feature matrix columns are computed using trapezoidal integration.
+
 ### TVDiff
 
 TVDiff computes the derivative $u = \dot{f}$ by solving the variational problem:
@@ -110,13 +119,14 @@ Trajectory MAE: $v$ error $= 0.0010$ mV, $w$ error $= 0.0003$.
 
 ### Noise Robustness Benchmark ($\sigma = 5\%$)
 
-| Differentiation Method | $\dot{v}$ MAE | $\dot{w}$ MAE | Correct Sparsity Pattern |
-|:---|:---:|:---:|:---:|
-| Central Finite Difference | 0.556 | 0.568 | ✗ |
-| Savitzky-Golay | 0.069 | 0.077 | Partial |
-| **TVDiff** ($\alpha=0.2$, 20 iters) | **0.029** | **0.013** | **✓** |
+| Method | $\dot{v}$ MAE | $\dot{w}$ MAE | Correct Sparsity Pattern | Trajectory Reconstruction MAE (v) |
+|:---|:---:|:---:|:---:|:---:|
+| Central Finite Difference | 0.556 | 0.568 | ✗ | Diverges |
+| Savitzky-Golay | 0.069 | 0.077 | Partial | 1.1040 |
+| **TVDiff** ($\alpha=0.2$, 20 iters) | **0.029** | **0.013** | **✓** | 0.0890 |
+| **Integral-Form SINDy (I-SINDy)** | N/A | N/A | **✓** | **0.0468** |
 
-TVDiff achieves a **19.4× reduction** in derivative estimation error over finite differences.
+Since I-SINDy bypasses numerical differentiation entirely, it has no derivative error metrics. However, by transforming the problem into an integral formulation (which naturally filters out high-frequency noise), it outperforms TVDiff by **nearly 2×** on the final forward trajectory reconstruction.
 
 > **Persistent Excitation:** Recovering all coefficients requires a time-varying $I_{\text{ext}}(t)$. A constant current creates collinearity in $\boldsymbol{\Theta}$, making the system rank-deficient — the discrete analogue of the persistent excitation condition from adaptive control theory.
 

@@ -75,34 +75,13 @@ class SINDyEngine:
         self.state_names = None
         self.input_names = None
         
-    def fit(self, X, X_dot, U=None, state_names=None, input_names=None):
-        X = np.asarray(X)
-        X_dot = np.asarray(X_dot)
-        
-        if X.ndim == 1:
-            X = X[:, np.newaxis]
-        if X_dot.ndim == 1:
-            X_dot = X_dot[:, np.newaxis]
-            
-        M, D = X.shape
-        
-        self.state_names = state_names if state_names is not None else [f'x{i}' for i in range(D)]
-        if U is not None:
-            U_arr = np.asarray(U)
-            if U_arr.ndim == 1:
-                U_arr = U_arr[:, np.newaxis]
-            K = U_arr.shape[1]
-            self.input_names = input_names if input_names is not None else [f'u{i}' for i in range(K)]
-        else:
-            self.input_names = []
-            
-        Theta = self.library.fit_transform(X, U, state_names=self.state_names, input_names=self.input_names)
+    def _sparse_regress(self, Theta, Y):
         P = Theta.shape[1]
-        
-        self.coefficients = np.zeros((P, D))
+        D = Y.shape[1]
+        coefficients = np.zeros((P, D))
         
         for j in range(D):
-            y = X_dot[:, j]
+            y = Y[:, j]
             
             if self.alpha > 0:
                 lhs = Theta.T @ Theta + self.alpha * np.eye(P)
@@ -134,8 +113,69 @@ class SINDyEngine:
                 else:
                     xi[active] = np.linalg.lstsq(Theta_active, y, rcond=None)[0]
                     
-            self.coefficients[:, j] = xi
+            coefficients[:, j] = xi
+        return coefficients
+
+    def fit(self, X, X_dot, U=None, state_names=None, input_names=None):
+        X = np.asarray(X)
+        X_dot = np.asarray(X_dot)
+        
+        if X.ndim == 1:
+            X = X[:, np.newaxis]
+        if X_dot.ndim == 1:
+            X_dot = X_dot[:, np.newaxis]
             
+        M, D = X.shape
+        
+        self.state_names = state_names if state_names is not None else [f'x{i}' for i in range(D)]
+        if U is not None:
+            U_arr = np.asarray(U)
+            if U_arr.ndim == 1:
+                U_arr = U_arr[:, np.newaxis]
+            K = U_arr.shape[1]
+            self.input_names = input_names if input_names is not None else [f'u{i}' for i in range(K)]
+        else:
+            self.input_names = []
+            
+        Theta = self.library.fit_transform(X, U, state_names=self.state_names, input_names=self.input_names)
+        self.coefficients = self._sparse_regress(Theta, X_dot)
+        return self
+
+    def fit_integral(self, t, X, U=None, state_names=None, input_names=None, window_width=10):
+        X = np.asarray(X)
+        t = np.asarray(t)
+        
+        if X.ndim == 1:
+            X = X[:, np.newaxis]
+            
+        M, D = X.shape
+        assert len(t) == M, f"Time vector length ({len(t)}) must match state X length ({M})."
+        
+        self.state_names = state_names if state_names is not None else [f'x{i}' for i in range(D)]
+        if U is not None:
+            U_arr = np.asarray(U)
+            if U_arr.ndim == 1:
+                U_arr = U_arr[:, np.newaxis]
+            K = U_arr.shape[1]
+            self.input_names = input_names if input_names is not None else [f'u{i}' for i in range(K)]
+        else:
+            self.input_names = []
+            U_arr = None
+            
+        Theta_raw = self.library.fit_transform(X, U, state_names=self.state_names, input_names=self.input_names)
+        P = Theta_raw.shape[1]
+        
+        # Y_i = X(t_{i+H}) - X(t_i)
+        Y = X[window_width:] - X[:-window_width]
+        
+        # Integrate each feature library column over [t_i, t_{i+H}]
+        Theta_int = np.zeros((M - window_width, P))
+        for i in range(M - window_width):
+            t_sub = t[i : i + window_width + 1]
+            Theta_sub = Theta_raw[i : i + window_width + 1, :]
+            Theta_int[i, :] = np.trapz(Theta_sub, x=t_sub, axis=0)
+            
+        self.coefficients = self._sparse_regress(Theta_int, Y)
         return self
 
     def predict(self, X, U=None):
