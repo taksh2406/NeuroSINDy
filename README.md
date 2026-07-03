@@ -204,7 +204,8 @@ CLI flags:
 ```
 --noise FLOAT          Measurement noise std dev        [default: 0.0]
 --threshold FLOAT      STLSQ sparsity threshold λ       [default: 0.05]
---diff-method          central | savgol | spline | tv
+--diff-method          central | savgol | spline | tv | integral
+--window-width INT     Integral window size (steps)     [default: 10]
 --tv-alpha FLOAT       TVDiff regularisation α          [default: 0.01]
 --tv-iter INT          TVDiff CG iterations             [default: 15]
 --auto-threshold       BIC automatic threshold selection
@@ -212,6 +213,20 @@ CLI flags:
 --seed INT             Random seed                      [default: 42]
 --output-dir STR       Save directory for plots         [default: results]
 ```
+
+### Interactive Web Dashboard
+
+To make it easy for anyone to explore the model's sensitivity and the efficacy of different SINDy settings, NeuroSINDy includes a zero-dependency interactive dashboard. The dashboard allows you to:
+- Dynamically adjust neural model parameters ($a, b, \varepsilon$) and time-varying stimulus currents ($I_{\text{ext}}$).
+- Change noise levels and compare all numerical differentiation methods vs. Integral-Form SINDy (I-SINDy).
+- Run the discovery pipeline and instantly see the discovered equations rendered in LaTeX.
+- View interactive plot comparisons for state trajectories, phase portraits, derivative estimates, and library coefficients.
+
+Start the local server:
+```bash
+python3 dashboard.py
+```
+This will automatically launch the dashboard in your default browser at `http://localhost:8080`.
 
 ### Programmatic API
 
